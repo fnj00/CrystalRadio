@@ -2,11 +2,11 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
-using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
 using CrystalRadio.Services;
+using Dalamud.Interface.Textures.TextureWraps;
 
 namespace CrystalRadio.Windows;
 
@@ -23,6 +23,7 @@ public class MainWindow : Window, IDisposable
     private bool isSearching = false;
     private DateTime lastSearchTime = DateTime.MinValue;
     private const int SearchDebounceMs = 500;
+    private Dictionary<string, IDalamudTextureWrap?> imageCache = new();
 
     public MainWindow(Plugin plugin, string goatImagePath, IRadioService radioService)
         : base("Crystal Radio##MainWindow", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
@@ -36,7 +37,7 @@ public class MainWindow : Window, IDisposable
         this.goatImagePath = goatImagePath;
         this.plugin = plugin;
         this.radioService = radioService;
-        
+
         LoadStations();
     }
 
@@ -54,11 +55,19 @@ public class MainWindow : Window, IDisposable
         }
     }
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        foreach (var texture in imageCache.Values.OfType<IDalamudTextureWrap>())
+        {
+            texture?.Dispose();
+        }
+
+        imageCache.Clear();
+    }
 
     public override void Draw()
     {
-        ImGui.TextUnformatted("🎙️ Crystal Radio");
+        ImGui.TextUnformatted("Crystal Radio");
         ImGui.Separator();
 
         if (!stationsLoaded)
@@ -111,6 +120,38 @@ public class MainWindow : Window, IDisposable
         {
             radioService.Stop();
         }
+
+        ImGui.SameLine();
+        ImGui.Spacing();
+        ImGui.SameLine();
+        
+        DrawCurrentStationIcon();
+    }
+
+    private void DrawCurrentStationIcon()
+    {
+        var currentStation = radioService.CurrentStation;
+        if (currentStation == null || string.IsNullOrEmpty(currentStation.IconUrl))
+        {
+            ImGui.Dummy(new Vector2(150, 150));
+            return;
+        }
+
+        if (!imageCache.ContainsKey(currentStation.IconUrl))
+        {
+            LoadImageForStation(currentStation);
+            ImGui.Dummy(new Vector2(150, 150));
+            return;
+        }
+
+        if (imageCache.TryGetValue(currentStation.IconUrl, out var texture) && texture != null)
+        {
+            ImGui.Image(texture.Handle, new Vector2(150, 150));
+        }
+        else
+        {
+            ImGui.Dummy(new Vector2(150, 150));
+        }
     }
 
     private void DrawVolumeControl()
@@ -129,7 +170,7 @@ public class MainWindow : Window, IDisposable
         ImGui.TextUnformatted("🔍 Search:");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(-1);
-        
+
         if (ImGui.InputText("##SearchStations", ref searchQuery, 256))
         {
             if (searchQuery != previousSearchQuery)
@@ -138,7 +179,7 @@ public class MainWindow : Window, IDisposable
             }
         }
 
-        if ((DateTime.UtcNow - lastSearchTime).TotalMilliseconds >= SearchDebounceMs && 
+        if ((DateTime.UtcNow - lastSearchTime).TotalMilliseconds >= SearchDebounceMs &&
             searchQuery != previousSearchQuery && !isSearching)
         {
             previousSearchQuery = searchQuery;
@@ -182,8 +223,7 @@ public class MainWindow : Window, IDisposable
         {
             System.Diagnostics.Debug.WriteLine($"Search error: {ex.Message}");
             displayedStations = new List<RadioStation>();
-        }
-        finally
+        } finally
         {
             isSearching = false;
         }
@@ -208,6 +248,8 @@ public class MainWindow : Window, IDisposable
             radioService.PlayStationAsync(station);
         }
 
+        var isStationHovered = ImGui.IsItemHovered();
+
         if (isCurrentStation)
         {
             ImGui.PopStyleColor();
@@ -230,11 +272,56 @@ public class MainWindow : Window, IDisposable
             }
         }
 
-        if (ImGui.IsItemHovered())
+        if (isStationHovered)
         {
-            ImGui.SetTooltip($"{station.Genre}\n{station.Country} - {station.Language}");
+            var tooltipText = $"{station.Genre}\n{station.Country} - {station.Language}";
+            ImGui.SetTooltip(tooltipText);
         }
 
         ImGui.PopID();
     }
+
+    private void LoadImageForStation(RadioStation station)
+    {
+        if (string.IsNullOrEmpty(station.IconUrl))
+            return;
+
+        if (!imageCache.ContainsKey(station.IconUrl))
+        {
+            LoadImageAsyncForStation(station);
+        }
+    }
+
+    private async void LoadImageAsyncForStation(RadioStation station)
+    {
+        if (string.IsNullOrEmpty(station.IconUrl))
+            return;
+
+        try
+        {
+            using var httpClient = new System.Net.Http.HttpClient();
+            httpClient.Timeout = System.TimeSpan.FromSeconds(5);
+            var imageData = await httpClient.GetByteArrayAsync(station.IconUrl);
+
+            if (imageData == null || imageData.Length == 0)
+            {
+                imageCache[station.IconUrl] = null;
+                return;
+            }
+
+            var texture = await Plugin.TextureProvider.CreateFromImageAsync(
+                              new System.ReadOnlyMemory<byte>(imageData),
+                              $"CrystalRadio_{station.Id}");
+
+            imageCache[station.IconUrl] = texture;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Error loading icon for {station.Name}: {ex.Message}");
+            imageCache[station.IconUrl] = null;
+        }
+    }
 }
+
+
+
