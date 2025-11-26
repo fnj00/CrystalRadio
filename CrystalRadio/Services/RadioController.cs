@@ -1,0 +1,321 @@
+﻿using System;
+using System.Net.Http;
+
+namespace CrystalRadio.Services;
+
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+public class RadioController : IRadioService
+{
+    private RadioStation? _currentStation;
+    private PlaybackState _currentState = PlaybackState.Stopped;
+    private float _volume = 0.5f;
+    private List<RadioStation> _stations = new();
+    private HashSet<string> _favorites = new();
+    private IAudioPlayer? _audioPlayer;
+
+    public RadioStation? CurrentStation => _currentStation;
+    public PlaybackState CurrentState => _currentState;
+
+    public float Volume
+    {
+        get => _volume;
+        set
+        {
+            if (value < 0f || value > 1f)
+                throw new ArgumentOutOfRangeException(nameof(value), "Volume must be between 0.0 and 1.0");
+
+            var oldVolume = _volume;
+            _volume = value;
+            _audioPlayer?.SetVolume(value);
+            VolumeChanged?.Invoke(this, new VolumeChangedEventArgs { OldVolume = oldVolume, NewVolume = value });
+        }
+    }
+
+    public IReadOnlyList<RadioStation> Stations => _stations.AsReadOnly();
+
+    public IReadOnlyList<RadioStation> FavoriteStations =>
+        _stations.Where(s => _favorites.Contains(s.Id)).ToList().AsReadOnly();
+
+    public event EventHandler<PlaybackStateChangedEventArgs>? PlaybackStateChanged;
+    public event EventHandler<StationChangedEventArgs>? StationChanged;
+    public event EventHandler<VolumeChangedEventArgs>? VolumeChanged;
+    public event EventHandler<ErrorEventArgs>? ErrorOccurred;
+
+    public RadioController(IAudioPlayer audioPlayer)
+    {
+        _audioPlayer = audioPlayer;
+    }
+
+    public async Task<bool> PlayStationAsync(RadioStation station)
+    {
+        try
+        {
+            SetPlaybackState(PlaybackState.Loading);
+
+            var previousStation = _currentStation;
+            _currentStation = station;
+
+            if (_audioPlayer == null)
+                throw new InvalidOperationException("Audio player is not initialized");
+
+            var success = await _audioPlayer.PlayAsync(station.StreamUrl);
+
+            if (success)
+            {
+                SetPlaybackState(PlaybackState.Playing);
+                StationChanged?.Invoke(this, new StationChangedEventArgs
+                {
+                    PreviousStation = previousStation,
+                    CurrentStation = station
+                });
+                return true;
+            }
+            else
+            {
+                SetPlaybackState(PlaybackState.Error);
+                ErrorOccurred?.Invoke(this, new ErrorEventArgs
+                {
+                    Message = $"Failed to play station: {station.Name}"
+                });
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            SetPlaybackState(PlaybackState.Error);
+            ErrorOccurred?.Invoke(this, new ErrorEventArgs
+            {
+                Message = $"Error playing station: {ex.Message}",
+                Exception = ex
+            });
+            return false;
+        }
+    }
+
+    public void Stop()
+    {
+        _audioPlayer?.Stop();
+        SetPlaybackState(PlaybackState.Stopped);
+        var previousStation = _currentStation;
+        _currentStation = null;
+        StationChanged?.Invoke(this, new StationChangedEventArgs
+        {
+            PreviousStation = previousStation,
+            CurrentStation = null
+        });
+    }
+
+    public void Pause()
+    {
+        if (_currentState == PlaybackState.Playing)
+        {
+            _audioPlayer?.Pause();
+            SetPlaybackState(PlaybackState.Paused);
+        }
+    }
+
+    public void Resume()
+    {
+        if (_currentState == PlaybackState.Paused)
+        {
+            _audioPlayer?.Resume();
+            SetPlaybackState(PlaybackState.Playing);
+        }
+    }
+
+    public void AddFavorite(RadioStation station)
+    {
+        if (_favorites.Add(station.Id))
+        {
+            station.IsFavorite = true;
+        }
+    }
+
+    public void RemoveFavorite(RadioStation station)
+    {
+        if (_favorites.Remove(station.Id))
+        {
+            station.IsFavorite = false;
+        }
+    }
+
+    public async Task LoadStationsAsync()
+    {
+        try
+        {
+            var stations = await FetchFromRadioBrowserAsync();
+            _stations = stations.ToList();
+        }
+        catch (Exception ex)
+        {
+            ErrorOccurred?.Invoke(this, new ErrorEventArgs
+            {
+                Message = "Failed to load stations",
+                Exception = ex
+            });
+        }
+    }
+
+    public IEnumerable<RadioStation> SearchStations(string query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return _stations;
+            
+        var lowerQuery = query.ToLower();
+        return _stations.Where(s =>
+            s.Name.ToLower().Contains(lowerQuery) ||
+            s.Genre.ToLower().Contains(lowerQuery) ||
+            s.Country.ToLower().Contains(lowerQuery)
+        );
+    }
+
+    public async Task<List<RadioStation>> SearchStationsAsync(string query, int limit = 50)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return _stations.Take(limit).ToList();
+
+        try
+        {
+            return await FetchFromRadioBrowserAsync(query, limit);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Error searching stations: {ex.Message}");
+            return new List<RadioStation>();
+        }
+    }
+
+    private void SetPlaybackState(PlaybackState newState)
+    {
+        if (_currentState != newState)
+        {
+            var oldState = _currentState;
+            _currentState = newState;
+            PlaybackStateChanged?.Invoke(this, new PlaybackStateChangedEventArgs
+            {
+                OldState = oldState,
+                NewState = newState
+            });
+        }
+    }
+
+    private async Task<List<RadioStation>> FetchFromRadioBrowserAsync()
+    {
+        using var httpClient = new HttpClient();
+        httpClient.DefaultRequestHeaders.Add("User-Agent", "CrystalRadio/1.0");
+        
+        var stations = new List<RadioStation>();
+        
+        try
+        {
+            var response = await httpClient.GetAsync("https://de1.api.radio-browser.info/json/stations/topclick?limit=100");
+            response.EnsureSuccessStatusCode();
+            
+            var json = await response.Content.ReadAsStringAsync();
+            var radioBrowserStations = System.Text.Json.JsonSerializer.Deserialize<List<RadioBrowserStation>>(json);
+            
+            if (radioBrowserStations != null)
+            {
+                foreach (var rbStation in radioBrowserStations)
+                {
+                    if (!string.IsNullOrEmpty(rbStation.url_resolved) || !string.IsNullOrEmpty(rbStation.url))
+                    {
+                        stations.Add(new RadioStation
+                        {
+                            Id = rbStation.stationuuid ?? Guid.NewGuid().ToString(),
+                            Name = rbStation.name ?? "Unknown",
+                            StreamUrl = rbStation.url_resolved ?? rbStation.url ?? string.Empty,
+                            Genre = rbStation.tags ?? string.Empty,
+                            Description = $"{rbStation.country ?? "Unknown"} - {rbStation.language ?? "Unknown"}",
+                            Country = rbStation.country ?? string.Empty,
+                            Language = rbStation.language ?? string.Empty,
+                            IconUrl = rbStation.favicon,
+                            WebsiteUrl = rbStation.homepage
+                        });
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Error fetching from Radio Browser API: {ex.Message}");
+            throw;
+        }
+        
+        return stations;
+    }
+
+    private async Task<List<RadioStation>> FetchFromRadioBrowserAsync(string query, int limit)
+    {
+        using var httpClient = new HttpClient();
+        httpClient.DefaultRequestHeaders.Add("User-Agent", "CrystalRadio/1.0");
+        
+        var stations = new List<RadioStation>();
+        
+        try
+        {
+            var encodedQuery = System.Net.WebUtility.UrlEncode(query);
+            var url = $"https://de1.api.radio-browser.info/json/stations/search?name={encodedQuery}&limit={limit}";
+            
+            var response = await httpClient.GetAsync(url);
+            response.EnsureSuccessStatusCode();
+            
+            var json = await response.Content.ReadAsStringAsync();
+            var radioBrowserStations = System.Text.Json.JsonSerializer.Deserialize<List<RadioBrowserStation>>(json);
+            
+            if (radioBrowserStations != null)
+            {
+                foreach (var rbStation in radioBrowserStations)
+                {
+                    if (!string.IsNullOrEmpty(rbStation.url_resolved) || !string.IsNullOrEmpty(rbStation.url))
+                    {
+                        stations.Add(new RadioStation
+                        {
+                            Id = rbStation.stationuuid ?? Guid.NewGuid().ToString(),
+                            Name = rbStation.name ?? "Unknown",
+                            StreamUrl = rbStation.url_resolved ?? rbStation.url ?? string.Empty,
+                            Genre = rbStation.tags ?? string.Empty,
+                            Description = $"{rbStation.country ?? "Unknown"} - {rbStation.language ?? "Unknown"}",
+                            Country = rbStation.country ?? string.Empty,
+                            Language = rbStation.language ?? string.Empty,
+                            IconUrl = rbStation.favicon,
+                            WebsiteUrl = rbStation.homepage
+                        });
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Error searching Radio Browser API: {ex.Message}");
+            throw;
+        }
+        
+        return stations;
+    }
+}
+
+public class RadioBrowserStation
+{
+    public string? stationuuid { get; set; }
+    public string? name { get; set; }
+    public string? url { get; set; }
+    public string? url_resolved { get; set; }
+    public string? homepage { get; set; }
+    public string? favicon { get; set; }
+    public string? tags { get; set; }
+    public string? country { get; set; }
+    public string? language { get; set; }
+}
+
+public interface IAudioPlayer
+{
+    Task<bool> PlayAsync(string streamUrl);
+    void Stop();
+    void Pause();
+    void Resume();
+    void SetVolume(float volume);
+}

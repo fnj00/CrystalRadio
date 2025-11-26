@@ -1,10 +1,13 @@
-﻿using Dalamud.Game.Command;
+﻿﻿using System;
+ using Dalamud.Game.Command;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using System.IO;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
 using CrystalRadio.Windows;
+using CrystalRadio.Services;
+using CrystalRadio.Audio;
 
 namespace CrystalRadio;
 
@@ -20,6 +23,7 @@ public sealed class Plugin : IDalamudPlugin
     private const string CommandName = "/pmycommand";
 
     public Configuration Configuration { get; init; }
+    public IRadioService RadioService { get; init; }
 
     public readonly WindowSystem WindowSystem = new("CrystalRadio");
     private ConfigWindow ConfigWindow { get; init; }
@@ -29,11 +33,13 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
-        // You might normally want to embed resources and load them from the manifest stream
+        var audioPlayer = new AudioPlayer();
+        RadioService = new RadioController(audioPlayer);
+
         var goatImagePath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "goat.png");
 
         ConfigWindow = new ConfigWindow(this);
-        MainWindow = new MainWindow(this, goatImagePath);
+        MainWindow = new MainWindow(this, goatImagePath, RadioService);
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
@@ -61,7 +67,6 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
-        // Unregister all actions to not leak anythign during disposal of plugin
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
@@ -70,6 +75,11 @@ public sealed class Plugin : IDalamudPlugin
 
         ConfigWindow.Dispose();
         MainWindow.Dispose();
+
+        if (RadioService is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
 
         CommandManager.RemoveHandler(CommandName);
     }
