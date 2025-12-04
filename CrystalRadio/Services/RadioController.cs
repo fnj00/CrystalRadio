@@ -14,6 +14,7 @@ public class RadioController : IRadioService
     private float _volume = 0.5f;
     private List<RadioStation> _stations = new();
     private HashSet<string> _favorites = new();
+    private Dictionary<string, RadioStation> _favoriteStations = new();
     private IAudioPlayer? _audioPlayer;
     private readonly Configuration _configuration;
 
@@ -38,7 +39,7 @@ public class RadioController : IRadioService
     public IReadOnlyList<RadioStation> Stations => _stations.AsReadOnly();
 
     public IReadOnlyList<RadioStation> FavoriteStations =>
-        _stations.Where(s => _favorites.Contains(s.Id)).ToList().AsReadOnly();
+        _favoriteStations.Values.ToList().AsReadOnly();
 
     public event EventHandler<PlaybackStateChangedEventArgs>? PlaybackStateChanged;
     public event EventHandler<StationChangedEventArgs>? StationChanged;
@@ -138,6 +139,7 @@ public class RadioController : IRadioService
         if (_favorites.Add(station.Id))
         {
             station.IsFavorite = true;
+            _favoriteStations[station.Id] = station;
             _configuration.FavoriteStationIds.Add(station.Id);
             _configuration.Save();
         }
@@ -148,6 +150,7 @@ public class RadioController : IRadioService
         if (_favorites.Remove(station.Id))
         {
             station.IsFavorite = false;
+            _favoriteStations.Remove(station.Id);
             _configuration.FavoriteStationIds.Remove(station.Id);
             _configuration.Save();
         }
@@ -165,7 +168,37 @@ public class RadioController : IRadioService
                 if (_favorites.Contains(station.Id))
                 {
                     station.IsFavorite = true;
+                    _favoriteStations[station.Id] = station;
                 }
+            }
+            
+            var missingFavorites = _favorites.Where(id => !_favoriteStations.ContainsKey(id)).ToList();
+            foreach (var favoriteId in missingFavorites)
+            {
+                try
+                {
+                    var station = await FetchStationByUuidAsync(favoriteId);
+                    if (station != null)
+                    {
+                        station.IsFavorite = true;
+                        _favoriteStations[station.Id] = station;
+                    }
+                    else
+                    {
+                        _favorites.Remove(favoriteId);
+                        _configuration.FavoriteStationIds.Remove(favoriteId);
+                    }
+                }
+                catch
+                {
+                    _favorites.Remove(favoriteId);
+                    _configuration.FavoriteStationIds.Remove(favoriteId);
+                }
+            }
+            
+            if (missingFavorites.Count > 0)
+            {
+                _configuration.Save();
             }
         }
         catch (Exception ex)
@@ -324,6 +357,49 @@ public class RadioController : IRadioService
         }
         
         return stations;
+    }
+
+    private async Task<RadioStation?> FetchStationByUuidAsync(string uuid)
+    {
+        using var httpClient = new HttpClient();
+        httpClient.DefaultRequestHeaders.Add("User-Agent", "CrystalRadio/1.0");
+        
+        try
+        {
+            var url = $"https://de1.api.radio-browser.info/json/stations/byuuid/{uuid}";
+            
+            var response = await httpClient.GetAsync(url);
+            response.EnsureSuccessStatusCode();
+            
+            var json = await response.Content.ReadAsStringAsync();
+            var radioBrowserStations = System.Text.Json.JsonSerializer.Deserialize<List<RadioBrowserStation>>(json);
+            
+            if (radioBrowserStations != null && radioBrowserStations.Count > 0)
+            {
+                var rbStation = radioBrowserStations[0];
+                if (!string.IsNullOrEmpty(rbStation.url_resolved) || !string.IsNullOrEmpty(rbStation.url))
+                {
+                    return new RadioStation
+                    {
+                        Id = rbStation.stationuuid ?? uuid,
+                        Name = rbStation.name ?? "Unknown",
+                        StreamUrl = rbStation.url_resolved ?? rbStation.url ?? string.Empty,
+                        Genre = rbStation.tags ?? string.Empty,
+                        Description = $"{rbStation.country ?? "Unknown"} - {rbStation.language ?? "Unknown"}",
+                        Country = rbStation.country ?? string.Empty,
+                        Language = rbStation.language ?? string.Empty,
+                        IconUrl = rbStation.favicon,
+                        WebsiteUrl = rbStation.homepage
+                    };
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Error fetching station by UUID: {ex.Message}");
+        }
+        
+        return null;
     }
 }
 

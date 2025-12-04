@@ -24,6 +24,12 @@ public class MainWindow : Window, IDisposable
     private DateTime lastSearchTime = DateTime.MinValue;
     private const int SearchDebounceMs = 500;
     private Dictionary<string, IDalamudTextureWrap?> imageCache = new();
+    
+    private string favoriteSearchQuery = string.Empty;
+    private string previousFavoriteSearchQuery = string.Empty;
+    private List<RadioStation> displayedFavorites = new();
+    private bool isSearchingFavorites = false;
+    private DateTime lastFavoriteSearchTime = DateTime.MinValue;
 
     public MainWindow(Plugin plugin, string goatImagePath, IRadioService radioService)
         : base("Crystal Radio##MainWindow", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
@@ -49,6 +55,7 @@ public class MainWindow : Window, IDisposable
             displayedStations = radioService.Stations
                 .OrderByDescending(s => s.IsFavorite)
                 .ToList();
+            displayedFavorites = radioService.FavoriteStations.Take(100).ToList();
             stationsLoaded = true;
         }
         catch (Exception ex)
@@ -169,6 +176,31 @@ public class MainWindow : Window, IDisposable
 
     private void DrawStationList()
     {
+        using (var tabBar = ImRaii.TabBar("StationTabs"))
+        {
+            if (tabBar.Success)
+            {
+                using (var stationsTab = ImRaii.TabItem("Stations"))
+                {
+                    if (stationsTab.Success)
+                    {
+                        DrawStationsTab();
+                    }
+                }
+
+                using (var favoritesTab = ImRaii.TabItem("Favorites"))
+                {
+                    if (favoritesTab.Success)
+                    {
+                        DrawFavoritesTab();
+                    }
+                }
+            }
+        }
+    }
+
+    private void DrawStationsTab()
+    {
         ImGui.TextUnformatted("Search:");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(-1);
@@ -200,9 +232,80 @@ public class MainWindow : Window, IDisposable
             {
                 foreach (var station in displayedStations)
                 {
-                    DrawStationItem(station);
+                    DrawStationItem(station, false);
                 }
             }
+        }
+    }
+
+    private void DrawFavoritesTab()
+    {
+        ImGui.TextUnformatted("Search:");
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(-1);
+
+        if (ImGui.InputText("##SearchFavorites", ref favoriteSearchQuery, 256))
+        {
+            if (favoriteSearchQuery != previousFavoriteSearchQuery)
+            {
+                lastFavoriteSearchTime = DateTime.UtcNow;
+            }
+        }
+
+        if ((DateTime.UtcNow - lastFavoriteSearchTime).TotalMilliseconds >= SearchDebounceMs &&
+            favoriteSearchQuery != previousFavoriteSearchQuery && !isSearchingFavorites)
+        {
+            previousFavoriteSearchQuery = favoriteSearchQuery;
+            PerformAsyncFavoriteSearch(favoriteSearchQuery);
+        }
+
+        ImGui.Spacing();
+
+        var favoriteCount = displayedFavorites.Count;
+        var statusText = isSearchingFavorites ? $"Favorite Stations (Searching...)" : $"Favorite Stations ({favoriteCount})";
+        ImGui.TextUnformatted(statusText);
+
+        using (var child = ImRaii.Child("FavoriteListChild", Vector2.Zero, true))
+        {
+            if (child.Success)
+            {
+                foreach (var station in displayedFavorites)
+                {
+                    DrawStationItem(station, true);
+                }
+            }
+        }
+    }
+
+    private void PerformAsyncFavoriteSearch(string query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            displayedFavorites = radioService.FavoriteStations.Take(100).ToList();
+            isSearchingFavorites = false;
+            return;
+        }
+
+        isSearchingFavorites = true;
+        try
+        {
+            var lowerQuery = query.ToLower();
+            displayedFavorites = radioService.FavoriteStations
+                .Where(s =>
+                    s.Name.ToLower().Contains(lowerQuery) ||
+                    s.Genre.ToLower().Contains(lowerQuery) ||
+                    s.Country.ToLower().Contains(lowerQuery))
+                .Take(100)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Favorite search error: {ex.Message}");
+            displayedFavorites = new List<RadioStation>();
+        }
+        finally
+        {
+            isSearchingFavorites = false;
         }
     }
 
@@ -234,7 +337,7 @@ public class MainWindow : Window, IDisposable
     }
 
 
-    private void DrawStationItem(RadioStation station)
+    private void DrawStationItem(RadioStation station, bool inFavoritesTab)
     {
         var isCurrentStation = radioService.CurrentStation?.Id == station.Id;
         var isFavorite = station.IsFavorite;
@@ -267,11 +370,25 @@ public class MainWindow : Window, IDisposable
             {
                 radioService.RemoveFavorite(station);
                 
-                if (string.IsNullOrWhiteSpace(searchQuery))
+                if (inFavoritesTab)
                 {
-                    displayedStations = radioService.Stations
-                        .OrderByDescending(s => s.IsFavorite)
-                        .ToList();
+                    if (string.IsNullOrWhiteSpace(favoriteSearchQuery))
+                    {
+                        displayedFavorites = radioService.FavoriteStations.Take(100).ToList();
+                    }
+                    else
+                    {
+                        PerformAsyncFavoriteSearch(favoriteSearchQuery);
+                    }
+                }
+                else
+                {
+                    if (string.IsNullOrWhiteSpace(searchQuery))
+                    {
+                        displayedStations = radioService.Stations
+                            .OrderByDescending(s => s.IsFavorite)
+                            .ToList();
+                    }
                 }
             }
         }
@@ -281,11 +398,25 @@ public class MainWindow : Window, IDisposable
             {
                 radioService.AddFavorite(station);
                 
-                if (string.IsNullOrWhiteSpace(searchQuery))
+                if (inFavoritesTab)
                 {
-                    displayedStations = radioService.Stations
-                        .OrderByDescending(s => s.IsFavorite)
-                        .ToList();
+                    if (string.IsNullOrWhiteSpace(favoriteSearchQuery))
+                    {
+                        displayedFavorites = radioService.FavoriteStations.Take(100).ToList();
+                    }
+                    else
+                    {
+                        PerformAsyncFavoriteSearch(favoriteSearchQuery);
+                    }
+                }
+                else
+                {
+                    if (string.IsNullOrWhiteSpace(searchQuery))
+                    {
+                        displayedStations = radioService.Stations
+                            .OrderByDescending(s => s.IsFavorite)
+                            .ToList();
+                    }
                 }
             }
         }
