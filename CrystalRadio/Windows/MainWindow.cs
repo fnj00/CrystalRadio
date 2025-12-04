@@ -76,9 +76,6 @@ public class MainWindow : Window, IDisposable
 
     public override void Draw()
     {
-        ImGui.TextUnformatted("Crystal Radio");
-        ImGui.Separator();
-
         if (!stationsLoaded)
         {
             ImGui.TextUnformatted(loadingMessage);
@@ -165,12 +162,12 @@ public class MainWindow : Window, IDisposable
 
     private void DrawVolumeControl()
     {
-        var volume = radioService.Volume;
+        var volume = radioService.Volume * 100f;
         ImGui.TextUnformatted("Volume:");
         ImGui.SameLine();
-        if (ImGui.SliderFloat("##Volume", ref volume, 0f, 1f, "%.2f"))
+        if (ImGui.SliderFloat("##Volume", ref volume, 0f, 100f, "%.0f%%"))
         {
-            radioService.Volume = volume;
+            radioService.Volume = volume / 100f;
         }
     }
 
