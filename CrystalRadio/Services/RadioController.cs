@@ -15,6 +15,7 @@ public class RadioController : IRadioService
     private List<RadioStation> _stations = new();
     private HashSet<string> _favorites = new();
     private IAudioPlayer? _audioPlayer;
+    private readonly Configuration _configuration;
 
     public RadioStation? CurrentStation => _currentStation;
     public PlaybackState CurrentState => _currentState;
@@ -44,9 +45,15 @@ public class RadioController : IRadioService
     public event EventHandler<VolumeChangedEventArgs>? VolumeChanged;
     public event EventHandler<ErrorEventArgs>? ErrorOccurred;
 
-    public RadioController(IAudioPlayer audioPlayer)
+    public RadioController(IAudioPlayer audioPlayer, Configuration configuration)
     {
         _audioPlayer = audioPlayer;
+        _configuration = configuration;
+        
+        foreach (var favoriteId in _configuration.FavoriteStationIds)
+        {
+            _favorites.Add(favoriteId);
+        }
     }
 
     public async Task<bool> PlayStationAsync(RadioStation station)
@@ -131,6 +138,8 @@ public class RadioController : IRadioService
         if (_favorites.Add(station.Id))
         {
             station.IsFavorite = true;
+            _configuration.FavoriteStationIds.Add(station.Id);
+            _configuration.Save();
         }
     }
 
@@ -139,6 +148,8 @@ public class RadioController : IRadioService
         if (_favorites.Remove(station.Id))
         {
             station.IsFavorite = false;
+            _configuration.FavoriteStationIds.Remove(station.Id);
+            _configuration.Save();
         }
     }
 
@@ -148,6 +159,14 @@ public class RadioController : IRadioService
         {
             var stations = await FetchFromRadioBrowserAsync();
             _stations = stations.ToList();
+            
+            foreach (var station in _stations)
+            {
+                if (_favorites.Contains(station.Id))
+                {
+                    station.IsFavorite = true;
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -179,7 +198,17 @@ public class RadioController : IRadioService
 
         try
         {
-            return await FetchFromRadioBrowserAsync(query, limit);
+            var results = await FetchFromRadioBrowserAsync(query, limit);
+            
+            foreach (var station in results)
+            {
+                if (_favorites.Contains(station.Id))
+                {
+                    station.IsFavorite = true;
+                }
+            }
+            
+            return results;
         }
         catch (Exception ex)
         {

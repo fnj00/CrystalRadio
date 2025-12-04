@@ -46,7 +46,9 @@ public class MainWindow : Window, IDisposable
         try
         {
             await radioService.LoadStationsAsync();
-            displayedStations = radioService.Stations.ToList();
+            displayedStations = radioService.Stations
+                .OrderByDescending(s => s.IsFavorite)
+                .ToList();
             stationsLoaded = true;
         }
         catch (Exception ex)
@@ -97,7 +99,7 @@ public class MainWindow : Window, IDisposable
 
         ImGui.Spacing();
 
-        if (ImGui.Button("▶ Play", new Vector2(100, 0)) && currentStation != null && !isPlaying)
+        if (ImGui.Button("Play", new Vector2(100, 0)) && currentStation != null && !isPlaying)
         {
             if (isPaused)
             {
@@ -110,13 +112,13 @@ public class MainWindow : Window, IDisposable
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("⏸ Pause", new Vector2(100, 0)) && isPlaying)
+        if (ImGui.Button("Pause", new Vector2(100, 0)) && isPlaying)
         {
             radioService.Pause();
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("⏹ Stop", new Vector2(100, 0)) && radioService.CurrentState != PlaybackState.Stopped)
+        if (ImGui.Button("Stop", new Vector2(100, 0)) && radioService.CurrentState != PlaybackState.Stopped)
         {
             radioService.Stop();
         }
@@ -167,7 +169,7 @@ public class MainWindow : Window, IDisposable
 
     private void DrawStationList()
     {
-        ImGui.TextUnformatted("🔍 Search:");
+        ImGui.TextUnformatted("Search:");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(-1);
 
@@ -208,7 +210,9 @@ public class MainWindow : Window, IDisposable
     {
         if (string.IsNullOrWhiteSpace(query))
         {
-            displayedStations = radioService.Stations.ToList();
+            displayedStations = radioService.Stations
+                .OrderByDescending(s => s.IsFavorite)
+                .ToList();
             isSearching = false;
             return;
         }
@@ -242,7 +246,7 @@ public class MainWindow : Window, IDisposable
             ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.2f, 0.5f, 0.2f, 1f));
         }
 
-        var stationLabel = $"{(isFavorite ? "⭐" : "  ")} {station.Name}";
+        var stationLabel = $"{(isFavorite ? "★" : "  ")} {station.Name}";
         if (ImGui.Button(stationLabel, new Vector2(-45, 0)))
         {
             radioService.PlayStationAsync(station);
@@ -262,6 +266,13 @@ public class MainWindow : Window, IDisposable
             if (ImGui.Button("★##favorite", new Vector2(40, 0)))
             {
                 radioService.RemoveFavorite(station);
+                
+                if (string.IsNullOrWhiteSpace(searchQuery))
+                {
+                    displayedStations = radioService.Stations
+                        .OrderByDescending(s => s.IsFavorite)
+                        .ToList();
+                }
             }
         }
         else
@@ -269,12 +280,20 @@ public class MainWindow : Window, IDisposable
             if (ImGui.Button("☆##favorite", new Vector2(40, 0)))
             {
                 radioService.AddFavorite(station);
+                
+                if (string.IsNullOrWhiteSpace(searchQuery))
+                {
+                    displayedStations = radioService.Stations
+                        .OrderByDescending(s => s.IsFavorite)
+                        .ToList();
+                }
             }
         }
 
         if (isStationHovered)
         {
-            var tooltipText = $"{station.Genre}\n{station.Country} - {station.Language}";
+            var genre = station.Genre.Length > 100 ? station.Genre.Substring(0, 100) + "..." : station.Genre;
+            var tooltipText = $"{genre}\n{station.Country} - {station.Language}";
             ImGui.SetTooltip(tooltipText);
         }
 

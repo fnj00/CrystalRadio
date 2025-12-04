@@ -34,7 +34,7 @@ public sealed class Plugin : IDalamudPlugin
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
         var audioPlayer = new AudioPlayer();
-        RadioService = new RadioController(audioPlayer);
+        RadioService = new RadioController(audioPlayer, Configuration);
 
         var goatImagePath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "goat.png");
 
