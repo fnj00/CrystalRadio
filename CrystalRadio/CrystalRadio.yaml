@@ -1,0 +1,8 @@
+﻿author: Saevath
+name: CrystalRadio
+repo_url: https://github.com/Saevath/CrystalRadio
+punchline: Stream internet radio stations while playing FFXIV.
+description: |
+    Listen to your favorite internet radio stations directly in-game. Browse stations and manage your favorites. Use /cradio to open the radio player.
+category_tags:
+    - Other

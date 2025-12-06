@@ -31,7 +31,7 @@ public class MainWindow : Window, IDisposable
     private bool isSearchingFavorites = false;
     private DateTime lastFavoriteSearchTime = DateTime.MinValue;
 
-    public MainWindow(Plugin plugin, string goatImagePath, IRadioService radioService)
+    public MainWindow(Plugin plugin, IRadioService radioService)
         : base("Crystal Radio##MainWindow", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
     {
         SizeConstraints = new WindowSizeConstraints
@@ -40,7 +40,6 @@ public class MainWindow : Window, IDisposable
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
         };
 
-        this.goatImagePath = goatImagePath;
         this.plugin = plugin;
         this.radioService = radioService;
 
