@@ -1,5 +1,6 @@
 ﻿using Dalamud.Configuration;
 using System;
+using System.Collections.Generic;
 
 namespace CrystalRadio;
 
@@ -11,7 +12,8 @@ public class Configuration : IPluginConfiguration
     public bool IsConfigWindowMovable { get; set; } = true;
     public bool SomePropertyToBeSavedAndWithADefault { get; set; } = true;
 
-    // The below exist just to make saving less cumbersome
+    public List<string> FavoriteStationIds { get; set; } = new();
+
     public void Save()
     {
         Plugin.PluginInterface.SavePluginConfig(this);
