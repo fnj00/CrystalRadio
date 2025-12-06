@@ -26,7 +26,6 @@ public sealed class Plugin : IDalamudPlugin
     public IRadioService RadioService { get; init; }
 
     public readonly WindowSystem WindowSystem = new("CrystalRadio");
-    private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
 
     public Plugin()
@@ -35,11 +34,10 @@ public sealed class Plugin : IDalamudPlugin
 
         var audioPlayer = new AudioPlayer();
         RadioService = new RadioController(audioPlayer, Configuration);
+
         
-        ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this, RadioService);
 
-        WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
@@ -48,7 +46,6 @@ public sealed class Plugin : IDalamudPlugin
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
-        PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
 
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
     }
@@ -56,12 +53,10 @@ public sealed class Plugin : IDalamudPlugin
     public void Dispose()
     {
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
-        PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
         
         WindowSystem.RemoveAllWindows();
 
-        ConfigWindow.Dispose();
         MainWindow.Dispose();
 
         if (RadioService is IDisposable disposable)
@@ -78,6 +73,5 @@ public sealed class Plugin : IDalamudPlugin
         MainWindow.Toggle();
     }
     
-    public void ToggleConfigUi() => ConfigWindow.Toggle();
     public void ToggleMainUi() => MainWindow.Toggle();
 }

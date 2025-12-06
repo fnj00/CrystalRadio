@@ -12,15 +12,14 @@ namespace CrystalRadio.Windows;
 
 public class MainWindow : Window, IDisposable
 {
-    private readonly string goatImagePath;
     private readonly Plugin plugin;
     private readonly IRadioService radioService;
     private string searchQuery = string.Empty;
     private string previousSearchQuery = string.Empty;
-    private bool stationsLoaded = false;
+    private bool stationsLoaded;
     private string loadingMessage = "Loading stations...";
     private List<RadioStation> displayedStations = new();
-    private bool isSearching = false;
+    private bool isSearching;
     private DateTime lastSearchTime = DateTime.MinValue;
     private const int SearchDebounceMs = 500;
     private Dictionary<string, IDalamudTextureWrap?> imageCache = new();
