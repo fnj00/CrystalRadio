@@ -29,6 +29,7 @@ public interface IRadioService
     event EventHandler<StationChangedEventArgs>? StationChanged;
     event EventHandler<VolumeChangedEventArgs>? VolumeChanged;
     event EventHandler<ErrorEventArgs>? ErrorOccurred;
+    event EventHandler<MetadataChangedEventArgs>? MetadataChanged;
 }
 
 
@@ -64,3 +65,11 @@ public class ErrorEventArgs : EventArgs
     public string Message { get; set; } = string.Empty;
     public Exception? Exception { get; set; }
 }
+
+public class MetadataChangedEventArgs : EventArgs
+{
+    public RadioStation? Station { get; set; }
+    public string? CurrentTrack { get; set; }
+    public DateTime UpdateTime { get; set; }
+}
+

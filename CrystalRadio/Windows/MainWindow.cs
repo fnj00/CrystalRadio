@@ -101,6 +101,14 @@ public class MainWindow : Window, IDisposable
         ImGui.SameLine();
         ImGui.TextColored(new Vector4(0, 1, 0, 1), currentStation?.Name ?? "Nothing");
 
+        // Display current track from ICY metadata if available
+        if (currentStation?.CurrentTrack != null)
+        {
+            ImGui.TextUnformatted("Track:");
+            ImGui.SameLine();
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 1f, 1f), currentStation.CurrentTrack);
+        }
+
         ImGui.Spacing();
 
         if (ImGui.Button("Play", new Vector2(100, 0)) && currentStation != null && !isPlaying)

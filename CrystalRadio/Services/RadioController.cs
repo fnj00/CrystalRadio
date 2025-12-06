@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Net.Http;
+using System.Threading;
 
 namespace CrystalRadio.Services;
 
@@ -17,6 +18,8 @@ public class RadioController : IRadioService
     private Dictionary<string, RadioStation> _favoriteStations = new();
     private IAudioPlayer? _audioPlayer;
     private readonly Configuration _configuration;
+    private readonly IcyMetadataService _metadataService = new();
+    private CancellationTokenSource? _metadataCancellation;
 
     public RadioStation? CurrentStation => _currentStation;
     public PlaybackState CurrentState => _currentState;
@@ -45,6 +48,7 @@ public class RadioController : IRadioService
     public event EventHandler<StationChangedEventArgs>? StationChanged;
     public event EventHandler<VolumeChangedEventArgs>? VolumeChanged;
     public event EventHandler<ErrorEventArgs>? ErrorOccurred;
+    public event EventHandler<MetadataChangedEventArgs>? MetadataChanged;
 
     public RadioController(IAudioPlayer audioPlayer, Configuration configuration)
     {
@@ -61,6 +65,9 @@ public class RadioController : IRadioService
     {
         try
         {
+            // Stop metadata reading for previous station
+            StopMetadataReading();
+            
             SetPlaybackState(PlaybackState.Loading);
 
             var previousStation = _currentStation;
@@ -79,6 +86,10 @@ public class RadioController : IRadioService
                     PreviousStation = previousStation,
                     CurrentStation = station
                 });
+                
+                // Start metadata reading for new station
+                StartMetadataReading(station);
+                
                 return true;
             }
             else
@@ -109,6 +120,10 @@ public class RadioController : IRadioService
         SetPlaybackState(PlaybackState.Stopped);
         var previousStation = _currentStation;
         _currentStation = null;
+        
+        // Stop metadata reading when stream stops
+        StopMetadataReading();
+        
         StationChanged?.Invoke(this, new StationChangedEventArgs
         {
             PreviousStation = previousStation,
@@ -245,7 +260,7 @@ public class RadioController : IRadioService
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Error searching stations: {ex.Message}");
+            Plugin.Log.Error($"Error searching stations: {ex.Message}");
             return new List<RadioStation>();
         }
     }
@@ -303,7 +318,7 @@ public class RadioController : IRadioService
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Error fetching from Radio Browser API: {ex.Message}");
+            Plugin.Log.Error($"Error fetching from Radio Browser API: {ex.Message}");
             throw;
         }
         
@@ -352,7 +367,7 @@ public class RadioController : IRadioService
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Error searching Radio Browser API: {ex.Message}");
+            Plugin.Log.Error($"Error searching Radio Browser API: {ex.Message}");
             throw;
         }
         
@@ -396,10 +411,102 @@ public class RadioController : IRadioService
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Error fetching station by UUID: {ex.Message}");
+            Plugin.Log.Error($"Error fetching station by UUID: {ex.Message}");
         }
         
         return null;
+    }
+
+    private void StartMetadataReading(RadioStation station)
+    {
+        // Cancel any existing metadata reading
+        StopMetadataReading();
+        
+        // Create new cancellation token
+        _metadataCancellation = new CancellationTokenSource();
+        
+        // Start metadata reading in background
+        _ = ReadMetadataAsync(station, _metadataCancellation.Token);
+    }
+
+    private void StopMetadataReading()
+    {
+        if (_metadataCancellation != null)
+        {
+            _metadataCancellation.Cancel();
+            _metadataCancellation.Dispose();
+            _metadataCancellation = null;
+        }
+    }
+
+    private async Task ReadMetadataAsync(RadioStation station, CancellationToken cancellationToken)
+    {
+        Plugin.Log.Info($"[ICY Metadata] Starting metadata reading for: {station.Name}");
+        string? lastTrack = null;
+        bool firstRun = true;
+        
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                Plugin.Log.Debug($"[ICY Metadata] Polling metadata from: {station.StreamUrl}");
+                
+                // Fetch current metadata
+                var streamInfo = await _metadataService.GetIcyMetadataAsync(
+                    station.StreamUrl,
+                    timeout: 5000,
+                    cancellationToken: cancellationToken);
+
+                Plugin.Log.Debug($"[ICY Metadata] Response - IcyMetaInt: {streamInfo.IcyMetaInt}, StreamTitle: {streamInfo.StreamTitle ?? "(null)"}");
+
+                // Update on first run or when metadata changes
+                if (streamInfo.StreamTitle != null && (firstRun || streamInfo.StreamTitle != lastTrack))
+                {
+                    lastTrack = streamInfo.StreamTitle;
+                    station.CurrentTrack = streamInfo.StreamTitle;
+                    station.LastMetadataUpdate = DateTime.UtcNow;
+                    Plugin.Log.Info($"[ICY Metadata] Track updated: {streamInfo.StreamTitle}");
+                    
+                    // Fire event to notify UI
+                    MetadataChanged?.Invoke(this, new MetadataChangedEventArgs
+                    {
+                        Station = station,
+                        CurrentTrack = streamInfo.StreamTitle,
+                        UpdateTime = DateTime.UtcNow
+                    });
+                    
+                    firstRun = false;
+                }
+                else
+                {
+                    Plugin.Log.Debug($"[ICY Metadata] No new metadata (current: {streamInfo.StreamTitle ?? "(null)"}, last: {lastTrack ?? "(none)"})");
+                    firstRun = false;
+                }
+                
+                // Wait before next poll (10 seconds)
+                await Task.Delay(10000, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected when stopping - exit loop
+                Plugin.Log.Debug($"[ICY Metadata] Metadata reading cancelled for: {station.Name}");
+                break;
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Error($"[ICY Metadata] Error reading metadata: {ex.Message}");
+                
+                // Wait before retrying on error
+                try
+                {
+                    await Task.Delay(10000, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }
     }
 }
 

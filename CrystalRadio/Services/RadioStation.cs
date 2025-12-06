@@ -1,4 +1,6 @@
-﻿namespace CrystalRadio.Services;
+﻿using System;
+
+namespace CrystalRadio.Services;
 
 public class RadioStation
 {
@@ -22,6 +24,16 @@ public class RadioStation
     public string? IconUrl { get; set; }
 
     public string? WebsiteUrl { get; set; }
+
+    /// <summary>
+    /// Current track or stream title from ICY metadata
+    /// </summary>
+    public string? CurrentTrack { get; set; }
+
+    /// <summary>
+    /// Last time the metadata was updated
+    /// </summary>
+    public DateTime? LastMetadataUpdate { get; set; }
 
     public override string ToString() => Name;
 }
