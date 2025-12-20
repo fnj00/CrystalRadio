@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project Sdk="Dalamud.NET.Sdk/13.1.0">
+<Project Sdk="Dalamud.NET.Sdk/14.0.1">
   <PropertyGroup>
     <Version>0.0.0.1</Version>
     <Description>Stream internet radio stations while playing FFXIV</Description>
@@ -7,6 +7,14 @@
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <IsPackable>false</IsPackable>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Author>Saevath</Author>
+    <Name>CrystalRadio</Name>
+    <RepoUrl>https://github.com/Saevath/CrystalRadio</RepoUrl>
+    <Punchline>Stream internet radio stations while playing FFXIV</Punchline>
+    <Description>Listen to your favorite internet radio stations directly in-game. Browse stations and manage your favorites. Use /cradio to open the radio player</Description>
+    <Tags>radio;music;audio</Tags>
+    <CategoryTags>other;test</CategoryTags>
+    <TestingDalamudApiLevel>14</TestingDalamudApiLevel>
   </PropertyGroup>
 
   <ItemGroup>
