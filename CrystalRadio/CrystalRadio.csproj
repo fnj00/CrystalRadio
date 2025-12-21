@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <Folder Include="images\" />
+    <Content Include="CrystalRadio.yaml" />
 
     <Content Include="images\icon.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
