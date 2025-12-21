@@ -15,6 +15,7 @@
     <Tags>radio;music;audio</Tags>
     <CategoryTags>other;test</CategoryTags>
     <TestingDalamudApiLevel>14</TestingDalamudApiLevel>
+    <DalamudApiLevel>14</DalamudApiLevel>
   </PropertyGroup>
 
   <ItemGroup>
