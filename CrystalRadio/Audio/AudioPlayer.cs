@@ -21,7 +21,6 @@ public class AudioPlayer : IAudioPlayer, IDisposable
     private void InitializePlayer()
     {
         _wavePlayer = new WaveOutEvent();
-        _wavePlayer.Volume = _volume;
     }
 
     public async Task<bool> PlayAsync(string streamUrl)
@@ -32,6 +31,7 @@ public class AudioPlayer : IAudioPlayer, IDisposable
 
             _streamingPlayer = new HttpStreamingPlayer(streamUrl);
             _wavePlayer!.Init(_streamingPlayer);
+            _wavePlayer.Volume = _volume;
             _wavePlayer.Play();
 
             return await Task.FromResult(true);
@@ -67,7 +67,8 @@ public class AudioPlayer : IAudioPlayer, IDisposable
     public void SetVolume(float volume)
     {
         _volume = Math.Clamp(volume, 0f, 1f);
-        if (_wavePlayer != null)
+        // Only apply volume to the device if playback is active
+        if (_wavePlayer != null && _wavePlayer.PlaybackState == NAudio.Wave.PlaybackState.Playing)
         {
             _wavePlayer.Volume = _volume;
         }
