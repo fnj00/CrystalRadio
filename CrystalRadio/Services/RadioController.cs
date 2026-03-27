@@ -1,25 +1,26 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Threading;
+using System.Threading.Tasks;
+using CrystalRadio.Audio;
 
 namespace CrystalRadio.Services;
 
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-
-public class RadioController : IRadioService
+public class RadioController : IRadioService, IDisposable
 {
+    private readonly IAudioPlayer _audioPlayer;
+    private readonly Configuration _configuration;
+    private readonly IcyMetadataService _metadataService = new();
+    private readonly List<RadioStation> _stations = new();
+    private readonly List<RadioStation> _customStations = new();
+    private readonly HashSet<string> _favoriteIds = new();
+
     private RadioStation? _currentStation;
     private PlaybackState _currentState = PlaybackState.Stopped;
     private float _volume = 0.5f;
-    private List<RadioStation> _stations = new();
-    private HashSet<string> _favorites = new();
-    private Dictionary<string, RadioStation> _favoriteStations = new();
-    private IAudioPlayer? _audioPlayer;
-    private readonly Configuration _configuration;
-    private readonly IcyMetadataService _metadataService = new();
-    private CancellationTokenSource? _metadataCancellation;
+    private CancellationTokenSource? _metadataCts;
 
     public RadioStation? CurrentStation => _currentStation;
     public PlaybackState CurrentState => _currentState;
@@ -29,101 +30,264 @@ public class RadioController : IRadioService
         get => _volume;
         set
         {
-            if (value < 0f || value > 1f)
-                throw new ArgumentOutOfRangeException(nameof(value), "Volume must be between 0.0 and 1.0");
+            if (Math.Abs(_volume - value) < 0.0001f)
+                return;
 
-            var oldVolume = _volume;
-            _volume = value;
-            _audioPlayer?.SetVolume(value);
-            VolumeChanged?.Invoke(this, new VolumeChangedEventArgs { OldVolume = oldVolume, NewVolume = value });
+            var oldValue = _volume;
+            _volume = Math.Clamp(value, 0.0f, 1.0f);
+            _audioPlayer.SetVolume(_volume);
+
+            VolumeChanged?.Invoke(this, new VolumeChangedEventArgs
+            {
+                OldVolume = oldValue,
+                NewVolume = _volume
+            });
         }
     }
 
     public IReadOnlyList<RadioStation> Stations => _stations.AsReadOnly();
-
     public IReadOnlyList<RadioStation> FavoriteStations =>
-        _favoriteStations.Values.ToList().AsReadOnly();
+        _stations.Where(s => _favoriteIds.Contains(s.Id)).ToList().AsReadOnly();
+    public IReadOnlyList<RadioStation> CustomStations => _customStations.AsReadOnly();
 
-    public event EventHandler<PlaybackStateChangedEventArgs>? PlaybackStateChanged;
-    public event EventHandler<StationChangedEventArgs>? StationChanged;
-    public event EventHandler<VolumeChangedEventArgs>? VolumeChanged;
-    public event EventHandler<ErrorEventArgs>? ErrorOccurred;
-    public event EventHandler<MetadataChangedEventArgs>? MetadataChanged;
+    public event EventHandler? PlaybackStateChanged;
+    public event EventHandler? StationChanged;
+    public event EventHandler? VolumeChanged;
+    public event EventHandler? ErrorOccurred;
+    public event EventHandler? MetadataChanged;
 
     public RadioController(IAudioPlayer audioPlayer, Configuration configuration)
     {
         _audioPlayer = audioPlayer;
         _configuration = configuration;
-        
-        foreach (var favoriteId in _configuration.FavoriteStationIds)
+
+        foreach (var id in configuration.FavoriteStationIds)
+            _favoriteIds.Add(id);
+
+        ReloadCustomStations();
+    }
+
+    public void Dispose()
+    {
+        StopMetadataReading();
+    }
+
+    public void ReloadCustomStations()
+    {
+        _customStations.Clear();
+
+        foreach (var custom in _configuration.CustomStations)
         {
-            _favorites.Add(favoriteId);
+            if (string.IsNullOrWhiteSpace(custom.Name) || string.IsNullOrWhiteSpace(custom.StreamUrl))
+                continue;
+
+            _customStations.Add(new RadioStation
+            {
+                Id = $"custom:{custom.Id}",
+                Name = custom.Name,
+                StreamUrl = custom.StreamUrl,
+                Genre = custom.Genre,
+                Description = custom.Description,
+                WebsiteUrl = string.IsNullOrWhiteSpace(custom.WebsiteUrl) ? null : custom.WebsiteUrl,
+                IsFavorite = _favoriteIds.Contains($"custom:{custom.Id}"),
+                IsCustom = true,
+                Source = "Custom"
+            });
         }
     }
 
-    public async Task<bool> PlayStationAsync(RadioStation station)
+    public async Task LoadStationsAsync()
     {
         try
         {
-            // Stop metadata reading for previous station
-            StopMetadataReading();
-            
-            SetPlaybackState(PlaybackState.Loading);
+            ReloadCustomStations();
 
+            var stationTasks = new[]
+            {
+                LoadStationsFromApi("https://de1.api.radio-browser.info/json/stations/topvote/20"),
+                LoadStationsFromApi("https://de1.api.radio-browser.info/json/stations/bytag/jazz?limit=10"),
+                LoadStationsFromApi("https://de1.api.radio-browser.info/json/stations/bytag/rock?limit=10"),
+                LoadStationsFromApi("https://de1.api.radio-browser.info/json/stations/bytag/classical?limit=10"),
+                LoadStationsFromApi("https://de1.api.radio-browser.info/json/stations/bytag/electronic?limit=10")
+            };
+
+            var stationLists = await Task.WhenAll(stationTasks);
+            var apiStations = stationLists
+                .SelectMany(list => list)
+                .GroupBy(s => s.Id)
+                .Select(g => g.First())
+                .Take(100)
+                .ToList();
+
+            _stations.Clear();
+
+            foreach (var station in _customStations)
+                _stations.Add(station);
+
+            foreach (var station in apiStations)
+            {
+                station.IsFavorite = _favoriteIds.Contains(station.Id);
+                station.Source = "Radio Browser";
+                _stations.Add(station);
+            }
+        }
+        catch (Exception ex)
+        {
+            ErrorOccurred?.Invoke(this, new ErrorEventArgs
+            {
+                Message = $"Failed to load stations: {ex.Message}",
+                Exception = ex
+            });
+            throw;
+        }
+    }
+
+    private async Task<List<RadioStation>> LoadStationsFromApi(string apiUrl)
+    {
+        using var httpClient = new HttpClient();
+        var response = await httpClient.GetStringAsync(apiUrl);
+        return ParseStationsJson(response);
+    }
+
+    private List<RadioStation> ParseStationsJson(string json)
+    {
+        var stations = new List<RadioStation>();
+
+        var stationPattern =
+            @"\{[^{}]*""stationuuid"":""([^""]*)""[^{}]*""name"":""([^""]*)""[^{}]*""url_resolved"":""([^""]*)""[^{}]*""tags"":""([^""]*)""[^{}]*""country"":""([^""]*)""[^{}]*""language"":""([^""]*)""[^{}]*(?:""favicon"":""([^""]*)"")?[^{}]*\}";
+
+        var matches = System.Text.RegularExpressions.Regex.Matches(json, stationPattern);
+
+        foreach (System.Text.RegularExpressions.Match match in matches)
+        {
+            if (match.Groups.Count < 7)
+                continue;
+
+            var station = new RadioStation
+            {
+                Id = match.Groups[1].Value,
+                Name = System.Web.HttpUtility.HtmlDecode(match.Groups[2].Value),
+                StreamUrl = match.Groups[3].Value.Replace(@"\/", "/"),
+                Genre = System.Web.HttpUtility.HtmlDecode(match.Groups[4].Value),
+                Country = System.Web.HttpUtility.HtmlDecode(match.Groups[5].Value),
+                Language = System.Web.HttpUtility.HtmlDecode(match.Groups[6].Value),
+                IconUrl = match.Groups.Count > 7 ? match.Groups[7].Value.Replace(@"\/", "/") : null,
+                Source = "Radio Browser"
+            };
+
+            if (!string.IsNullOrWhiteSpace(station.Id) &&
+                !string.IsNullOrWhiteSpace(station.Name) &&
+                !string.IsNullOrWhiteSpace(station.StreamUrl))
+            {
+                stations.Add(station);
+            }
+        }
+
+        return stations;
+    }
+
+    public IEnumerable<RadioStation> SearchStations(string query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return _stations;
+
+        var lowerQuery = query.ToLowerInvariant();
+
+        return _stations.Where(s =>
+            s.Name.ToLowerInvariant().Contains(lowerQuery) ||
+            s.Genre.ToLowerInvariant().Contains(lowerQuery) ||
+            s.Country.ToLowerInvariant().Contains(lowerQuery) ||
+            s.Language.ToLowerInvariant().Contains(lowerQuery) ||
+            s.Description.ToLowerInvariant().Contains(lowerQuery));
+    }
+
+    public async Task<List<RadioStation>> SearchStationsAsync(string query, int limit = 50)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(query))
+                return _stations.Take(limit).ToList();
+
+            var localCustomResults = _customStations.Where(s =>
+                s.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                s.Genre.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                s.Description.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            using var httpClient = new HttpClient();
+            var encodedQuery = Uri.EscapeDataString(query);
+            var apiUrl = $"https://de1.api.radio-browser.info/json/stations/search?name={encodedQuery}&limit={limit}";
+            var response = await httpClient.GetStringAsync(apiUrl);
+            var stations = ParseStationsJson(response);
+
+            foreach (var station in stations)
+                station.IsFavorite = _favoriteIds.Contains(station.Id);
+
+            return localCustomResults
+                .Concat(stations)
+                .GroupBy(s => s.Id)
+                .Select(g => g.First())
+                .Take(limit)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            ErrorOccurred?.Invoke(this, new ErrorEventArgs
+            {
+                Message = $"Search failed: {ex.Message}",
+                Exception = ex
+            });
+
+            return SearchStations(query).Take(limit).ToList();
+        }
+    }
+
+    public async Task PlayStationAsync(RadioStation station)
+    {
+        if (_currentStation?.Id == station.Id && _currentState == PlaybackState.Playing)
+            return;
+
+        try
+        {
             var previousStation = _currentStation;
+            SetPlaybackState(PlaybackState.Loading);
+            StopMetadataReading();
+
+            await _audioPlayer.PlayAsync(station.StreamUrl);
+
             _currentStation = station;
+            SetPlaybackState(PlaybackState.Playing);
 
-            if (_audioPlayer == null)
-                throw new InvalidOperationException("Audio player is not initialized");
-
-            var success = await _audioPlayer.PlayAsync(station.StreamUrl);
-
-            if (success)
+            StationChanged?.Invoke(this, new StationChangedEventArgs
             {
-                SetPlaybackState(PlaybackState.Playing);
-                StationChanged?.Invoke(this, new StationChangedEventArgs
-                {
-                    PreviousStation = previousStation,
-                    CurrentStation = station
-                });
-                
-                // Start metadata reading for new station
-                StartMetadataReading(station);
-                
-                return true;
-            }
-            else
-            {
-                SetPlaybackState(PlaybackState.Error);
-                ErrorOccurred?.Invoke(this, new ErrorEventArgs
-                {
-                    Message = $"Failed to play station: {station.Name}"
-                });
-                return false;
-            }
+                PreviousStation = previousStation,
+                CurrentStation = _currentStation
+            });
+
+            StartMetadataReading();
         }
         catch (Exception ex)
         {
             SetPlaybackState(PlaybackState.Error);
             ErrorOccurred?.Invoke(this, new ErrorEventArgs
             {
-                Message = $"Error playing station: {ex.Message}",
+                Message = $"Failed to play station {station.Name}: {ex.Message}",
                 Exception = ex
             });
-            return false;
         }
     }
 
     public void Stop()
     {
-        _audioPlayer?.Stop();
-        SetPlaybackState(PlaybackState.Stopped);
+        if (_currentState == PlaybackState.Stopped)
+            return;
+
         var previousStation = _currentStation;
-        _currentStation = null;
-        
-        // Stop metadata reading when stream stops
+        _audioPlayer.Stop();
         StopMetadataReading();
-        
+        _currentStation = null;
+        SetPlaybackState(PlaybackState.Stopped);
+
         StationChanged?.Invoke(this, new StationChangedEventArgs
         {
             PreviousStation = previousStation,
@@ -133,370 +297,131 @@ public class RadioController : IRadioService
 
     public void Pause()
     {
-        if (_currentState == PlaybackState.Playing)
-        {
-            _audioPlayer?.Pause();
-            SetPlaybackState(PlaybackState.Paused);
-        }
+        if (_currentState != PlaybackState.Playing)
+            return;
+
+        _audioPlayer.Pause();
+        StopMetadataReading();
+        SetPlaybackState(PlaybackState.Paused);
     }
 
     public void Resume()
     {
-        if (_currentState == PlaybackState.Paused)
-        {
-            _audioPlayer?.Resume();
-            SetPlaybackState(PlaybackState.Playing);
-        }
+        if (_currentState != PlaybackState.Paused)
+            return;
+
+        _audioPlayer.Resume();
+        SetPlaybackState(PlaybackState.Playing);
+        StartMetadataReading();
     }
 
     public void AddFavorite(RadioStation station)
     {
-        if (_favorites.Add(station.Id))
+        if (_favoriteIds.Add(station.Id))
         {
             station.IsFavorite = true;
-            _favoriteStations[station.Id] = station;
-            _configuration.FavoriteStationIds.Add(station.Id);
+            _configuration.FavoriteStationIds = _favoriteIds.ToList();
             _configuration.Save();
         }
     }
 
     public void RemoveFavorite(RadioStation station)
     {
-        if (_favorites.Remove(station.Id))
+        if (_favoriteIds.Remove(station.Id))
         {
             station.IsFavorite = false;
-            _favoriteStations.Remove(station.Id);
-            _configuration.FavoriteStationIds.Remove(station.Id);
+            _configuration.FavoriteStationIds = _favoriteIds.ToList();
             _configuration.Save();
-        }
-    }
-
-    public async Task LoadStationsAsync()
-    {
-        try
-        {
-            var stations = await FetchFromRadioBrowserAsync();
-            _stations = stations.ToList();
-            
-            foreach (var station in _stations)
-            {
-                if (_favorites.Contains(station.Id))
-                {
-                    station.IsFavorite = true;
-                    _favoriteStations[station.Id] = station;
-                }
-            }
-            
-            var missingFavorites = _favorites.Where(id => !_favoriteStations.ContainsKey(id)).ToList();
-            foreach (var favoriteId in missingFavorites)
-            {
-                try
-                {
-                    var station = await FetchStationByUuidAsync(favoriteId);
-                    if (station != null)
-                    {
-                        station.IsFavorite = true;
-                        _favoriteStations[station.Id] = station;
-                    }
-                    else
-                    {
-                        _favorites.Remove(favoriteId);
-                        _configuration.FavoriteStationIds.Remove(favoriteId);
-                    }
-                }
-                catch
-                {
-                    _favorites.Remove(favoriteId);
-                    _configuration.FavoriteStationIds.Remove(favoriteId);
-                }
-            }
-            
-            if (missingFavorites.Count > 0)
-            {
-                _configuration.Save();
-            }
-        }
-        catch (Exception ex)
-        {
-            ErrorOccurred?.Invoke(this, new ErrorEventArgs
-            {
-                Message = "Failed to load stations",
-                Exception = ex
-            });
-        }
-    }
-
-    public IEnumerable<RadioStation> SearchStations(string query)
-    {
-        if (string.IsNullOrWhiteSpace(query))
-            return _stations;
-            
-        var lowerQuery = query.ToLower();
-        return _stations.Where(s =>
-            s.Name.ToLower().Contains(lowerQuery) ||
-            s.Genre.ToLower().Contains(lowerQuery) ||
-            s.Country.ToLower().Contains(lowerQuery)
-        );
-    }
-
-    public async Task<List<RadioStation>> SearchStationsAsync(string query, int limit = 50)
-    {
-        if (string.IsNullOrWhiteSpace(query))
-            return _stations.Take(limit).ToList();
-
-        try
-        {
-            var results = await FetchFromRadioBrowserAsync(query, limit);
-            
-            foreach (var station in results)
-            {
-                if (_favorites.Contains(station.Id))
-                {
-                    station.IsFavorite = true;
-                }
-            }
-            
-            return results;
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.Error($"Error searching stations: {ex.Message}");
-            return new List<RadioStation>();
         }
     }
 
     private void SetPlaybackState(PlaybackState newState)
     {
-        if (_currentState != newState)
+        if (_currentState == newState)
+            return;
+
+        var oldState = _currentState;
+        _currentState = newState;
+
+        PlaybackStateChanged?.Invoke(this, new PlaybackStateChangedEventArgs
         {
-            var oldState = _currentState;
-            _currentState = newState;
-            PlaybackStateChanged?.Invoke(this, new PlaybackStateChangedEventArgs
-            {
-                OldState = oldState,
-                NewState = newState
-            });
-        }
+            OldState = oldState,
+            NewState = newState
+        });
     }
 
-    private async Task<List<RadioStation>> FetchFromRadioBrowserAsync()
+    private void StartMetadataReading()
     {
-        using var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Add("User-Agent", "CrystalRadio/1.0");
-        
-        var stations = new List<RadioStation>();
-        
-        try
-        {
-            var response = await httpClient.GetAsync("https://de1.api.radio-browser.info/json/stations/topclick?limit=100");
-            response.EnsureSuccessStatusCode();
-            
-            var json = await response.Content.ReadAsStringAsync();
-            var radioBrowserStations = System.Text.Json.JsonSerializer.Deserialize<List<RadioBrowserStation>>(json);
-            
-            if (radioBrowserStations != null)
-            {
-                foreach (var rbStation in radioBrowserStations)
-                {
-                    if (!string.IsNullOrEmpty(rbStation.url_resolved) || !string.IsNullOrEmpty(rbStation.url))
-                    {
-                        stations.Add(new RadioStation
-                        {
-                            Id = rbStation.stationuuid ?? Guid.NewGuid().ToString(),
-                            Name = rbStation.name ?? "Unknown",
-                            StreamUrl = rbStation.url_resolved ?? rbStation.url ?? string.Empty,
-                            Genre = rbStation.tags ?? string.Empty,
-                            Description = $"{rbStation.country ?? "Unknown"} - {rbStation.language ?? "Unknown"}",
-                            Country = rbStation.country ?? string.Empty,
-                            Language = rbStation.language ?? string.Empty,
-                            IconUrl = rbStation.favicon,
-                            WebsiteUrl = rbStation.homepage
-                        });
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.Error($"Error fetching from Radio Browser API: {ex.Message}");
-            throw;
-        }
-        
-        return stations;
-    }
+        if (_currentStation == null)
+            return;
 
-    private async Task<List<RadioStation>> FetchFromRadioBrowserAsync(string query, int limit)
-    {
-        using var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Add("User-Agent", "CrystalRadio/1.0");
-        
-        var stations = new List<RadioStation>();
-        
-        try
-        {
-            var encodedQuery = System.Net.WebUtility.UrlEncode(query);
-            var url = $"https://de1.api.radio-browser.info/json/stations/search?name={encodedQuery}&limit={limit}";
-            
-            var response = await httpClient.GetAsync(url);
-            response.EnsureSuccessStatusCode();
-            
-            var json = await response.Content.ReadAsStringAsync();
-            var radioBrowserStations = System.Text.Json.JsonSerializer.Deserialize<List<RadioBrowserStation>>(json);
-            
-            if (radioBrowserStations != null)
-            {
-                foreach (var rbStation in radioBrowserStations)
-                {
-                    if (!string.IsNullOrEmpty(rbStation.url_resolved) || !string.IsNullOrEmpty(rbStation.url))
-                    {
-                        stations.Add(new RadioStation
-                        {
-                            Id = rbStation.stationuuid ?? Guid.NewGuid().ToString(),
-                            Name = rbStation.name ?? "Unknown",
-                            StreamUrl = rbStation.url_resolved ?? rbStation.url ?? string.Empty,
-                            Genre = rbStation.tags ?? string.Empty,
-                            Description = $"{rbStation.country ?? "Unknown"} - {rbStation.language ?? "Unknown"}",
-                            Country = rbStation.country ?? string.Empty,
-                            Language = rbStation.language ?? string.Empty,
-                            IconUrl = rbStation.favicon,
-                            WebsiteUrl = rbStation.homepage
-                        });
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.Error($"Error searching Radio Browser API: {ex.Message}");
-            throw;
-        }
-        
-        return stations;
-    }
-
-    private async Task<RadioStation?> FetchStationByUuidAsync(string uuid)
-    {
-        using var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Add("User-Agent", "CrystalRadio/1.0");
-        
-        try
-        {
-            var url = $"https://de1.api.radio-browser.info/json/stations/byuuid/{uuid}";
-            
-            var response = await httpClient.GetAsync(url);
-            response.EnsureSuccessStatusCode();
-            
-            var json = await response.Content.ReadAsStringAsync();
-            var radioBrowserStations = System.Text.Json.JsonSerializer.Deserialize<List<RadioBrowserStation>>(json);
-            
-            if (radioBrowserStations != null && radioBrowserStations.Count > 0)
-            {
-                var rbStation = radioBrowserStations[0];
-                if (!string.IsNullOrEmpty(rbStation.url_resolved) || !string.IsNullOrEmpty(rbStation.url))
-                {
-                    return new RadioStation
-                    {
-                        Id = rbStation.stationuuid ?? uuid,
-                        Name = rbStation.name ?? "Unknown",
-                        StreamUrl = rbStation.url_resolved ?? rbStation.url ?? string.Empty,
-                        Genre = rbStation.tags ?? string.Empty,
-                        Description = $"{rbStation.country ?? "Unknown"} - {rbStation.language ?? "Unknown"}",
-                        Country = rbStation.country ?? string.Empty,
-                        Language = rbStation.language ?? string.Empty,
-                        IconUrl = rbStation.favicon,
-                        WebsiteUrl = rbStation.homepage
-                    };
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.Error($"Error fetching station by UUID: {ex.Message}");
-        }
-        
-        return null;
-    }
-
-    private void StartMetadataReading(RadioStation station)
-    {
-        // Cancel any existing metadata reading
         StopMetadataReading();
-        
-        // Create new cancellation token
-        _metadataCancellation = new CancellationTokenSource();
-        
-        // Start metadata reading in background
-        _ = ReadMetadataAsync(station, _metadataCancellation.Token);
+        _metadataCts = new CancellationTokenSource();
+        _ = ReadMetadataLoopAsync(_metadataCts.Token);
     }
 
     private void StopMetadataReading()
     {
-        if (_metadataCancellation != null)
-        {
-            _metadataCancellation.Cancel();
-            _metadataCancellation.Dispose();
-            _metadataCancellation = null;
-        }
+        _metadataCts?.Cancel();
+        _metadataCts?.Dispose();
+        _metadataCts = null;
     }
 
-    private async Task ReadMetadataAsync(RadioStation station, CancellationToken cancellationToken)
+    private async Task ReadMetadataLoopAsync(CancellationToken cancellationToken)
     {
-        Plugin.Log.Info($"[ICY Metadata] Starting metadata reading for: {station.Name}");
-        string? lastTrack = null;
-        bool firstRun = true;
-        
-        while (!cancellationToken.IsCancellationRequested)
+        if (_currentStation == null)
+            return;
+
+        var stationId = _currentStation.Id;
+
+        while (!cancellationToken.IsCancellationRequested &&
+               _currentStation != null &&
+               _currentStation.Id == stationId &&
+               (_currentState == PlaybackState.Playing || _currentState == PlaybackState.Loading))
         {
             try
             {
-                Plugin.Log.Debug($"[ICY Metadata] Polling metadata from: {station.StreamUrl}");
-                
-                // Fetch current metadata
+                Plugin.Log.Debug($"[RadioController] Attempting to read metadata for {_currentStation.Name}");
+
                 var streamInfo = await _metadataService.GetIcyMetadataAsync(
-                    station.StreamUrl,
-                    timeout: 5000,
-                    cancellationToken: cancellationToken);
+                    _currentStation.StreamUrl,
+                    10000,
+                    cancellationToken);
 
-                Plugin.Log.Debug($"[ICY Metadata] Response - IcyMetaInt: {streamInfo.IcyMetaInt}, StreamTitle: {streamInfo.StreamTitle ?? "(null)"}");
-
-                // Update on first run or when metadata changes
-                if (streamInfo.StreamTitle != null && (firstRun || streamInfo.StreamTitle != lastTrack))
+                if (!string.IsNullOrWhiteSpace(streamInfo.StreamTitle) &&
+                    _currentStation != null &&
+                    _currentStation.Id == stationId)
                 {
-                    lastTrack = streamInfo.StreamTitle;
-                    station.CurrentTrack = streamInfo.StreamTitle;
-                    station.LastMetadataUpdate = DateTime.UtcNow;
-                    Plugin.Log.Info($"[ICY Metadata] Track updated: {streamInfo.StreamTitle}");
-                    
-                    // Fire event to notify UI
-                    MetadataChanged?.Invoke(this, new MetadataChangedEventArgs
+                    if (_currentStation.CurrentTrack != streamInfo.StreamTitle)
                     {
-                        Station = station,
-                        CurrentTrack = streamInfo.StreamTitle,
-                        UpdateTime = DateTime.UtcNow
-                    });
-                    
-                    firstRun = false;
+                        _currentStation.CurrentTrack = streamInfo.StreamTitle;
+                        _currentStation.LastMetadataUpdate = DateTime.UtcNow;
+
+                        Plugin.Log.Debug($"[RadioController] Updated track: {_currentStation.CurrentTrack}");
+
+                        MetadataChanged?.Invoke(this, new MetadataChangedEventArgs
+                        {
+                            Station = _currentStation,
+                            CurrentTrack = _currentStation.CurrentTrack,
+                            UpdateTime = _currentStation.LastMetadataUpdate.Value
+                        });
+                    }
                 }
                 else
                 {
-                    Plugin.Log.Debug($"[ICY Metadata] No new metadata (current: {streamInfo.StreamTitle ?? "(null)"}, last: {lastTrack ?? "(none)"})");
-                    firstRun = false;
+                    Plugin.Log.Debug($"[RadioController] No stream title found for {_currentStation?.Name}");
                 }
-                
-                // Wait before next poll (10 seconds)
-                await Task.Delay(10000, cancellationToken);
+
+                await Task.Delay(30000, cancellationToken);
             }
             catch (OperationCanceledException)
             {
-                // Expected when stopping - exit loop
-                Plugin.Log.Debug($"[ICY Metadata] Metadata reading cancelled for: {station.Name}");
                 break;
             }
-            catch (Exception ex)
+            catch (TimeoutException ex)
             {
-                Plugin.Log.Error($"[ICY Metadata] Error reading metadata: {ex.Message}");
-                
-                // Wait before retrying on error
+                Plugin.Log.Debug($"[RadioController] Metadata timeout for {_currentStation?.Name}: {ex.Message}");
+
                 try
                 {
                     await Task.Delay(10000, cancellationToken);
@@ -506,28 +431,19 @@ public class RadioController : IRadioService
                     break;
                 }
             }
+            catch (Exception ex)
+            {
+                Plugin.Log.Error($"[RadioController] Metadata read error for {_currentStation?.Name}: {ex.Message}");
+
+                try
+                {
+                    await Task.Delay(15000, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
         }
     }
-}
-
-public class RadioBrowserStation
-{
-    public string? stationuuid { get; set; }
-    public string? name { get; set; }
-    public string? url { get; set; }
-    public string? url_resolved { get; set; }
-    public string? homepage { get; set; }
-    public string? favicon { get; set; }
-    public string? tags { get; set; }
-    public string? country { get; set; }
-    public string? language { get; set; }
-}
-
-public interface IAudioPlayer
-{
-    Task<bool> PlayAsync(string streamUrl);
-    void Stop();
-    void Pause();
-    void Resume();
-    void SetVolume(float volume);
 }

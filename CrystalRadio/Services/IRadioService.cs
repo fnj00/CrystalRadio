@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -9,29 +9,30 @@ public interface IRadioService
     RadioStation? CurrentStation { get; }
     PlaybackState CurrentState { get; }
     float Volume { get; set; }
+
     IReadOnlyList<RadioStation> Stations { get; }
     IReadOnlyList<RadioStation> FavoriteStations { get; }
-    
-    Task<bool> PlayStationAsync(RadioStation station);
+    IReadOnlyList<RadioStation> CustomStations { get; }
+
+    Task PlayStationAsync(RadioStation station);
     void Stop();
     void Pause();
     void Resume();
+
     void AddFavorite(RadioStation station);
     void RemoveFavorite(RadioStation station);
-    
+
     Task LoadStationsAsync();
-    
-    public IEnumerable<RadioStation> SearchStations(string query);
+    IEnumerable<RadioStation> SearchStations(string query);
+    Task<List<RadioStation>> SearchStationsAsync(string query, int limit = 50);
+    void ReloadCustomStations();
 
-    public Task<List<RadioStation>> SearchStationsAsync(string query, int limit = 50);
-    
-    event EventHandler<PlaybackStateChangedEventArgs>? PlaybackStateChanged;
-    event EventHandler<StationChangedEventArgs>? StationChanged;
-    event EventHandler<VolumeChangedEventArgs>? VolumeChanged;
-    event EventHandler<ErrorEventArgs>? ErrorOccurred;
-    event EventHandler<MetadataChangedEventArgs>? MetadataChanged;
+    event EventHandler? PlaybackStateChanged;
+    event EventHandler? StationChanged;
+    event EventHandler? VolumeChanged;
+    event EventHandler? ErrorOccurred;
+    event EventHandler? MetadataChanged;
 }
-
 
 public enum PlaybackState
 {
@@ -72,4 +73,3 @@ public class MetadataChangedEventArgs : EventArgs
     public string? CurrentTrack { get; set; }
     public DateTime UpdateTime { get; set; }
 }
-
