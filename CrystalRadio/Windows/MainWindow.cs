@@ -74,6 +74,7 @@ public class MainWindow : Window, IDisposable
                 .ToList();
 
             displayedFavorites = radioService.FavoriteStations
+                .OrderBy(s => s.Name)
                 .Take(100)
                 .ToList();
 
@@ -402,23 +403,16 @@ public class MainWindow : Window, IDisposable
             if (ImGui.Button("★##favorite", new Vector2(40, 0)))
             {
                 radioService.RemoveFavorite(station);
+                RefreshFavoriteDisplay();
 
                 if (inFavoritesTab)
                 {
-                    if (string.IsNullOrWhiteSpace(favoriteSearchQuery))
-                        displayedFavorites = radioService.FavoriteStations.Take(100).ToList();
-                    else
+                    if (!string.IsNullOrWhiteSpace(favoriteSearchQuery))
                         PerformAsyncFavoriteSearch(favoriteSearchQuery);
                 }
                 else
                 {
-                    if (string.IsNullOrWhiteSpace(searchQuery))
-                    {
-                        displayedStations = radioService.Stations
-                            .OrderByDescending(s => s.IsFavorite)
-                            .ThenBy(s => s.Name)
-                            .ToList();
-                    }
+                    RefreshStationDisplayIfNeeded();
                 }
             }
         }
@@ -427,23 +421,16 @@ public class MainWindow : Window, IDisposable
             if (ImGui.Button("☆##favorite", new Vector2(40, 0)))
             {
                 radioService.AddFavorite(station);
+                RefreshFavoriteDisplay();
 
                 if (inFavoritesTab)
                 {
-                    if (string.IsNullOrWhiteSpace(favoriteSearchQuery))
-                        displayedFavorites = radioService.FavoriteStations.Take(100).ToList();
-                    else
+                    if (!string.IsNullOrWhiteSpace(favoriteSearchQuery))
                         PerformAsyncFavoriteSearch(favoriteSearchQuery);
                 }
                 else
                 {
-                    if (string.IsNullOrWhiteSpace(searchQuery))
-                    {
-                        displayedStations = radioService.Stations
-                            .OrderByDescending(s => s.IsFavorite)
-                            .ThenBy(s => s.Name)
-                            .ToList();
-                    }
+                    RefreshStationDisplayIfNeeded();
                 }
             }
         }
@@ -456,6 +443,32 @@ public class MainWindow : Window, IDisposable
         }
 
         ImGui.PopID();
+    }
+
+    private void RefreshFavoriteDisplay()
+    {
+        if (string.IsNullOrWhiteSpace(favoriteSearchQuery))
+        {
+            displayedFavorites = radioService.FavoriteStations
+                .OrderBy(s => s.Name)
+                .Take(100)
+                .ToList();
+        }
+        else
+        {
+            PerformAsyncFavoriteSearch(favoriteSearchQuery);
+        }
+    }
+
+    private void RefreshStationDisplayIfNeeded()
+    {
+        if (string.IsNullOrWhiteSpace(searchQuery))
+        {
+            displayedStations = radioService.Stations
+                .OrderByDescending(s => s.IsFavorite)
+                .ThenBy(s => s.Name)
+                .ToList();
+        }
     }
 
     private void LoadImageForStation(RadioStation station)

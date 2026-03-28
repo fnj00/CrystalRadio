@@ -16,6 +16,7 @@ public class RadioController : IRadioService, IDisposable
     private readonly List<RadioStation> _stations = new();
     private readonly List<RadioStation> _customStations = new();
     private readonly HashSet<string> _favoriteIds = new();
+    private readonly Dictionary<string, RadioStation> _favoriteStations = new();
 
     private RadioStation? _currentStation;
     private PlaybackState _currentState = PlaybackState.Stopped;
@@ -46,8 +47,7 @@ public class RadioController : IRadioService, IDisposable
     }
 
     public IReadOnlyList<RadioStation> Stations => _stations.AsReadOnly();
-    public IReadOnlyList<RadioStation> FavoriteStations =>
-        _stations.Where(s => _favoriteIds.Contains(s.Id)).ToList().AsReadOnly();
+    public IReadOnlyList<RadioStation> FavoriteStations => _favoriteStations.Values.OrderBy(s => s.Name).ToList().AsReadOnly();
     public IReadOnlyList<RadioStation> CustomStations => _customStations.AsReadOnly();
 
     public event EventHandler? PlaybackStateChanged;
@@ -81,7 +81,7 @@ public class RadioController : IRadioService, IDisposable
             if (string.IsNullOrWhiteSpace(custom.Name) || string.IsNullOrWhiteSpace(custom.StreamUrl))
                 continue;
 
-            _customStations.Add(new RadioStation
+            var station = new RadioStation
             {
                 Id = $"custom:{custom.Id}",
                 Name = custom.Name,
@@ -92,7 +92,12 @@ public class RadioController : IRadioService, IDisposable
                 IsFavorite = _favoriteIds.Contains($"custom:{custom.Id}"),
                 IsCustom = true,
                 Source = "Custom"
-            });
+            };
+
+            _customStations.Add(station);
+
+            if (station.IsFavorite)
+                _favoriteStations[station.Id] = station;
         }
     }
 
@@ -129,7 +134,12 @@ public class RadioController : IRadioService, IDisposable
                 station.IsFavorite = _favoriteIds.Contains(station.Id);
                 station.Source = "Radio Browser";
                 _stations.Add(station);
+
+                if (station.IsFavorite)
+                    _favoriteStations[station.Id] = station;
             }
+
+            RefreshFavoriteReferencesFromStations();
         }
         catch (Exception ex)
         {
@@ -209,9 +219,9 @@ public class RadioController : IRadioService, IDisposable
                 return _stations.Take(limit).ToList();
 
             var localCustomResults = _customStations.Where(s =>
-                s.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                s.Genre.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                s.Description.Contains(query, StringComparison.OrdinalIgnoreCase))
+                    s.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                    s.Genre.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                    s.Description.Contains(query, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             using var httpClient = new HttpClient();
@@ -221,7 +231,12 @@ public class RadioController : IRadioService, IDisposable
             var stations = ParseStationsJson(response);
 
             foreach (var station in stations)
+            {
                 station.IsFavorite = _favoriteIds.Contains(station.Id);
+
+                if (station.IsFavorite)
+                    _favoriteStations[station.Id] = station;
+            }
 
             return localCustomResults
                 .Concat(stations)
@@ -320,6 +335,7 @@ public class RadioController : IRadioService, IDisposable
         if (_favoriteIds.Add(station.Id))
         {
             station.IsFavorite = true;
+            _favoriteStations[station.Id] = station;
             _configuration.FavoriteStationIds = _favoriteIds.ToList();
             _configuration.Save();
         }
@@ -330,8 +346,21 @@ public class RadioController : IRadioService, IDisposable
         if (_favoriteIds.Remove(station.Id))
         {
             station.IsFavorite = false;
+            _favoriteStations.Remove(station.Id);
             _configuration.FavoriteStationIds = _favoriteIds.ToList();
             _configuration.Save();
+        }
+    }
+
+    private void RefreshFavoriteReferencesFromStations()
+    {
+        foreach (var station in _stations)
+        {
+            if (_favoriteIds.Contains(station.Id))
+            {
+                station.IsFavorite = true;
+                _favoriteStations[station.Id] = station;
+            }
         }
     }
 
