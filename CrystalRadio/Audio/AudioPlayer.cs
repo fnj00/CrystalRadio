@@ -11,6 +11,7 @@ public class AudioPlayer : IAudioPlayer, IDisposable
     private EqualizerSampleProvider? _equalizer;
     private float _volume = 0.5f;
     private bool _disposed;
+    private GainSampleProvider? _gainProvider;
 
     private readonly EqualizerBand[] _eqBands =
     {
@@ -39,12 +40,18 @@ public class AudioPlayer : IAudioPlayer, IDisposable
 
             _streamingPlayer = new HttpStreamingPlayer(streamUrl);
 
-            // HttpStreamingPlayer inherits WaveStream, so ToSampleProvider() is available.
             var sampleProvider = _streamingPlayer.ToSampleProvider();
-            _equalizer = new EqualizerSampleProvider(sampleProvider, _eqBands);
+            _gainProvider = new GainSampleProvider(sampleProvider)
+            {
+                Gain = _volume
+            };
+
+            _equalizer = new EqualizerSampleProvider(_gainProvider, _eqBands);
 
             _wavePlayer!.Init(_equalizer);
-            _wavePlayer.Volume = _volume;
+
+            // Leave output/player volume at unity so we do not touch session/device level volume.
+            _wavePlayer.Volume = 1.0f;
             _wavePlayer.Play();
 
             return await Task.FromResult(true);
@@ -56,15 +63,15 @@ public class AudioPlayer : IAudioPlayer, IDisposable
         }
     }
 
-    public void Stop()
-    {
-        StopInternal();
-    }
-
     public void Pause()
     {
         if (_wavePlayer != null && _wavePlayer.PlaybackState == PlaybackState.Playing)
             _wavePlayer.Pause();
+    }
+
+    public void Stop()
+    {
+        StopInternal();
     }
 
     public void Resume()
@@ -77,8 +84,11 @@ public class AudioPlayer : IAudioPlayer, IDisposable
     {
         _volume = Math.Clamp(volume, 0f, 1f);
 
-        if (_wavePlayer != null && _wavePlayer.PlaybackState == PlaybackState.Playing)
-            _wavePlayer.Volume = _volume;
+        if (_gainProvider != null)
+            _gainProvider.Gain = _volume;
+
+        if (_wavePlayer != null)
+            _wavePlayer.Volume = 1.0f;
     }
 
     public float[] GetEqGains()
@@ -112,6 +122,7 @@ public class AudioPlayer : IAudioPlayer, IDisposable
         _wavePlayer?.Stop();
         _streamingPlayer?.Dispose();
         _streamingPlayer = null;
+        _gainProvider = null;
         _equalizer = null;
     }
 
